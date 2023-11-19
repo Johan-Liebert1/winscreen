@@ -9,6 +9,7 @@ import (
 	"os/exec"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 var ws *websocket.Conn
@@ -24,8 +25,9 @@ func ffmpeg() {
 		"-c:v", "h264",
 		"-profile:v", "baseline",
 		"-pix_fmt", "nv12",
+        "-threads", "0",
 		// "-preset", "ultrafast", "-tune", "zerolatency", 
-        "-f", "rtp", "rtp://127.0.0.1:6969",
+        "-f", "mpegts", "udp://127.0.0.1:6969?pkt_size=1316",
 	}
 
 	command := exec.Command(cmd, args...)
@@ -38,8 +40,7 @@ func ffmpeg() {
 }
 
 func main() {
-	go ffmpeg()
-	go rtp()
+	go udp()
 	StartServer()
 }
 
@@ -62,33 +63,38 @@ func StartServer() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func rtp() {
-	// Listen for incoming RTP packets
-	addr := "127.0.0.1:6969"
-	pc, err := net.ListenPacket("udp", addr)
+func udp() {
+	// Listen for incoming UDP packets
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 6969})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer pc.Close()
+	defer listener.Close()
 
-	// Connect to WebSocket
-	// ws, _, err := websocket.DefaultDialer.Dial("ws://example.com/socket", nil)
-	// if err != nil {
-	// 	log.Fatal("Dial:", err)
-	// }
-	// defer ws.Close()
 
-	// Read RTP packets and send them over WebSocket
+    reader, err := h264reader.NewReader(listener)
+
+    if err != nil {
+        fmt.Println("Failed to constrcute reader", err)
+    }
+    
 	for {
-		buffer := make([]byte, 1500) // RTP packet size
-		_, _, err := pc.ReadFrom(buffer)
+        nal, err := reader.NextNAL()
 
-		if err != nil {
-			log.Fatal(err)
-		}
+        if err != nil {
+            fmt.Println("Failed to get get next NAL", err)
+            continue
+        }
 
 		if ws != nil {
-			err = ws.WriteMessage(websocket.BinaryMessage, buffer)
+            b := make([]byte, len(nal.Data) + 3)
+            b[0] = 0x00
+            b[1] = 0x00
+            b[2] = 0x00
+            b[3] = 0x01
+
+            copy(b[4:], nal.Data)
+            err = ws.WriteMessage(websocket.BinaryMessage, b)
 
 			if err != nil {
 				continue
