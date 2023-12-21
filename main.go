@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net"
@@ -9,12 +10,13 @@ import (
 	"os/exec"
 
 	"github.com/gorilla/websocket"
-	"github.com/pion/webrtc/v3/pkg/media/h264reader"
+	// "github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 var ws *websocket.Conn
 
 func ffmpeg() {
+
 	cmd := "ffmpeg"
 
 	args := []string{
@@ -25,9 +27,9 @@ func ffmpeg() {
 		"-c:v", "h264",
 		"-profile:v", "baseline",
 		"-pix_fmt", "nv12",
-        "-threads", "0",
-		// "-preset", "ultrafast", "-tune", "zerolatency", 
-        "-f", "mpegts", "udp://127.0.0.1:6969?pkt_size=1316",
+		"-threads", "0",
+		// "-preset", "ultrafast", "-tune", "zerolatency",
+		"-f", "rtp", "rtp://127.0.0.1:6969?pkt_size=1316",
 	}
 
 	command := exec.Command(cmd, args...)
@@ -40,6 +42,7 @@ func ffmpeg() {
 }
 
 func main() {
+	// go ffmpeg()
 	go udp()
 	StartServer()
 }
@@ -63,42 +66,75 @@ func StartServer() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
+func find0001(thingBytes []byte) int {
+    nalPrefix4 := []byte{ 0, 0, 0, 1 }
+	nalPrefix3 := []byte{0, 0, 1}
+
+    for i := 0; i < len(thingBytes) - 4; i++ {
+        equal4 := bytes.Equal(nalPrefix4, thingBytes[i:i + 4])
+        equal3 := bytes.Equal(nalPrefix3, thingBytes[i:i + 3])
+
+        if equal3 || equal4 {
+            return i
+        }
+    }
+
+    return -1
+}
+
 func udp() {
 	// Listen for incoming UDP packets
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 6969})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 6969})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer listener.Close()
+	defer conn.Close()
 
+	connWrite, err := net.Dial("udp", "127.0.0.1:42069")
+	if err != nil {
+		log.Fatalf("Failed to dial: %v", err)
+	}
+	defer connWrite.Close()
 
-    reader, err := h264reader.NewReader(listener)
+	// Buffer for reading RTP packets
+	buffer := make([]byte, 1500)
 
-    if err != nil {
-        fmt.Println("Failed to constrcute reader", err)
-    }
-    
+	// var frameBuffer []byte = []byte{0x00, 0x00, 0x00, 0x01}
+
 	for {
-        nal, err := reader.NextNAL()
+		// Read a packet
+		n, _, err := conn.ReadFrom(buffer)
+		if err != nil {
+			panic(err)
+		}
 
-        if err != nil {
-            fmt.Println("Failed to get get next NAL", err)
+        index := find0001(buffer[:n])
+
+        if index == -1 {
+            fmt.Println("could not find stuff")
             continue
         }
 
+		// Parse the packet as RTP
+		// packet := &rtp.Packet{}
+		// if err := packet.Unmarshal(buffer[:n]); err != nil {
+		// 	panic(err)
+		// }
+
+		// frameBuffer = append(frameBuffer, buffer[:n]...)
+
+		//if packet.Marker {
+		// fmt.Println(packet.String())
+
 		if ws != nil {
-            b := make([]byte, len(nal.Data) + 3)
-            b[0] = 0x00
-            b[1] = 0x00
-            b[2] = 0x00
-            b[3] = 0x01
-
-            copy(b[4:], nal.Data)
-            err = ws.WriteMessage(websocket.BinaryMessage, b)
-
-			if err != nil {
-				continue
-			}
+            ws.WriteMessage(websocket.BinaryMessage, buffer[index:n])
 		}
+
+		// connWrite.Write(frameBuffer)
+		// fmt.Println("write", n, err)
+
+		// frameBuffer = []byte{0x00, 0x00, 0x00, 0x01} // Clear the frame buffer for the next frame
+		// }
+
 	}
 }
