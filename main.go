@@ -7,42 +7,18 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 
+	// "github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	// "github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 var ws *websocket.Conn
 
-func ffmpeg() {
-
-	cmd := "ffmpeg"
-
-	args := []string{
-		"-f", "x11grab",
-		"-r", "30",
-		"-s", "1920x1080",
-		"-i", ":1",
-		"-c:v", "h264",
-		"-profile:v", "baseline",
-		"-pix_fmt", "nv12",
-		"-threads", "0",
-		// "-preset", "ultrafast", "-tune", "zerolatency",
-		"-f", "rtp", "rtp://127.0.0.1:6969?pkt_size=1316",
-	}
-
-	command := exec.Command(cmd, args...)
-
-	fmt.Println(command)
-
-	err := command.Run()
-
-	fmt.Printf("Exited with err: %+v\n", err)
-}
-
 func main() {
-	// go ffmpeg()
+	// playh264()
 	go udp()
 	StartServer()
 }
@@ -66,18 +42,19 @@ func StartServer() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func find0001(thingBytes []byte) int {
-    nalPrefix4 := []byte{ 0, 0, 0, 1 }
-	nalPrefix3 := []byte{0, 0, 1}
+var prevNal = -1
 
-    for i := 0; i < len(thingBytes) - 4; i++ {
-        equal4 := bytes.Equal(nalPrefix4, thingBytes[i:i + 4])
-        equal3 := bytes.Equal(nalPrefix3, thingBytes[i:i + 3])
+func FindNals(frameBuffer []byte) int {
+	three := []byte{0, 0, 1}
+	four := []byte{0, 0, 0, 1}
 
-        if equal3 || equal4 {
+	for i := 0; i < len(frameBuffer)-4; i++ {
+		if bytes.Equal(three, frameBuffer[i:i+3]) {
             return i
-        }
-    }
+		} else if bytes.Equal(four, frameBuffer[i:i+4]) {
+            return i
+		}
+	}
 
     return -1
 }
@@ -90,16 +67,10 @@ func udp() {
 	}
 	defer conn.Close()
 
-	connWrite, err := net.Dial("udp", "127.0.0.1:42069")
-	if err != nil {
-		log.Fatalf("Failed to dial: %v", err)
-	}
-	defer connWrite.Close()
-
 	// Buffer for reading RTP packets
-	buffer := make([]byte, 1500)
+	buffer := make([]byte, 50000)
 
-	// var frameBuffer []byte = []byte{0x00, 0x00, 0x00, 0x01}
+	frameBuffer := make([]byte, 300_000)
 
 	for {
 		// Read a packet
@@ -108,33 +79,37 @@ func udp() {
 			panic(err)
 		}
 
-        index := find0001(buffer[:n])
+		// Parse the packet as RTP
+		packet := &rtp.Packet{}
+		if err := packet.Unmarshal(buffer[:n]); err != nil {
+			panic(err)
+		}
 
-        if index == -1 {
-            fmt.Println("could not find stuff")
+        // frameBuffer = append(frameBuffer, packet.Payload...)
+
+        newNalIndex := FindNals(packet.Payload)
+
+        fmt.Println(newNalIndex, len(frameBuffer))
+
+        if prevNal == -1 {
+            prevNal = newNalIndex
             continue
         }
 
-		// Parse the packet as RTP
-		// packet := &rtp.Packet{}
-		// if err := packet.Unmarshal(buffer[:n]); err != nil {
-		// 	panic(err)
-		// }
+        ws.WriteMessage(websocket.BinaryMessage, frameBuffer[prevNal:newNalIndex])
+        prevNal = newNalIndex
 
-		// frameBuffer = append(frameBuffer, buffer[:n]...)
+        frameBuffer = []byte{}
 
-		//if packet.Marker {
-		// fmt.Println(packet.String())
+        continue
 
-		if ws != nil {
-            ws.WriteMessage(websocket.BinaryMessage, buffer[index:n])
+		h264Packet := &codecs.H264Packet{}
+
+		if b, e := h264Packet.Unmarshal(packet.Payload); e == nil && ws != nil && len(b) > 0 {
+			// ws.WriteMessage(websocket.BinaryMessage, b)
+		} else if e != nil {
+			fmt.Println("Error: h264Packet", e)
+		} else if ws == nil {
 		}
-
-		// connWrite.Write(frameBuffer)
-		// fmt.Println("write", n, err)
-
-		// frameBuffer = []byte{0x00, 0x00, 0x00, 0x01} // Clear the frame buffer for the next frame
-		// }
-
 	}
 }
