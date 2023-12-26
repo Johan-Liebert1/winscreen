@@ -50,13 +50,13 @@ func FindNals(frameBuffer []byte) int {
 
 	for i := 0; i < len(frameBuffer)-4; i++ {
 		if bytes.Equal(three, frameBuffer[i:i+3]) {
-            return i
+			return i
 		} else if bytes.Equal(four, frameBuffer[i:i+4]) {
-            return i
+			return i
 		}
 	}
 
-    return -1
+	return -1
 }
 
 func udp() {
@@ -81,27 +81,34 @@ func udp() {
 
 		// Parse the packet as RTP
 		packet := &rtp.Packet{}
-		if err := packet.Unmarshal(buffer[:n]); err != nil {
-			panic(err)
-		}
+		// if err := packet.Unmarshal(buffer[:n]); err != nil {
+		// 	panic(err)
+		// }
 
-        // frameBuffer = append(frameBuffer, packet.Payload...)
+		// fmt.Println(buffer[:n])
+		frameBuffer = append(frameBuffer, buffer[:n]...)
 
-        newNalIndex := FindNals(packet.Payload)
+		newNalIndex := FindNals(frameBuffer)
 
-        fmt.Println(newNalIndex, len(frameBuffer))
+		fmt.Println(newNalIndex, len(frameBuffer))
 
-        if prevNal == -1 {
-            prevNal = newNalIndex
+        if newNalIndex == -1  {
             continue
         }
 
-        ws.WriteMessage(websocket.BinaryMessage, frameBuffer[prevNal:newNalIndex])
-        prevNal = newNalIndex
+		if prevNal == -1 {
+			prevNal = newNalIndex
+			continue
+		}
 
-        frameBuffer = []byte{}
+		if ws != nil && newNalIndex > prevNal {
+			ws.WriteMessage(websocket.BinaryMessage, frameBuffer[prevNal:newNalIndex])
+		}
 
-        continue
+		prevNal = -1
+		frameBuffer = []byte{}
+
+		continue
 
 		h264Packet := &codecs.H264Packet{}
 
